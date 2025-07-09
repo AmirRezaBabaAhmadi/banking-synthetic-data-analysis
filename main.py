@@ -119,45 +119,47 @@ def run_analysis():
         logger.info("1️⃣ استخراج ویژگی...")
         feature_extractor = BankingFeatureExtractor(db_manager)
         
-        # استخراج ویژگی (نمونه کوچک برای سرعت)
-        sample_size = min(10000, users_count)
-        all_users = db_manager.execute_query("SELECT user_id FROM users ORDER BY RANDOM()")
-        sample_user_ids = all_users['user_id'].head(sample_size).tolist()
+        # استخراج ویژگی برای همه کاربران (به صورت batch)
+        logger.info(f"استخراج ویژگی برای {users_count:,} کاربر...")
+        features_df = feature_extractor.extract_all_user_features(batch_size=1000)
         
-        features_df = feature_extractor.extract_features_batch(sample_user_ids)
         if not features_df.empty:
             feature_extractor.save_features_to_database(features_df)
             logger.info(f"استخراج شد: {len(features_df.columns)} ویژگی برای {len(features_df)} کاربر")
         
-        # 2. Clustering Analysis
+        # 2. Clustering Analysis (با sample مناسب برای performance)
         logger.info("2️⃣ تحلیل دسته‌بندی...")
         clustering_analyzer = BankingCustomerClustering(db_manager)
-        clustering_results = clustering_analyzer.run_complete_clustering_analysis(sample_size=sample_size)
+        # برای clustering از 50,000 نمونه استفاده کنیم (balance بین دقت و سرعت)
+        clustering_sample_size = min(50000, users_count)
+        clustering_results = clustering_analyzer.run_complete_clustering_analysis(sample_size=clustering_sample_size)
         logger.info(f"بهترین روش clustering: {clustering_results.get('best_method', 'هیچ')}")
         
-        # 3. Anomaly Detection
+        # 3. Anomaly Detection (با sample مناسب)
         logger.info("3️⃣ تشخیص ناهنجاری...")
         anomaly_detector = BankingAnomalyDetector(db_manager)
-        anomaly_results = anomaly_detector.run_complete_anomaly_analysis(sample_size=sample_size)
+        # برای anomaly detection نیز از 30,000 نمونه استفاده کنیم
+        anomaly_sample_size = min(30000, users_count)
+        anomaly_results = anomaly_detector.run_complete_anomaly_analysis(sample_size=anomaly_sample_size)
         logger.info(f"کشف شد: {anomaly_results.get('total_anomalies_detected', 0)} ناهنجاری")
         
-        # 4. Similarity Search
+        # 4. Similarity Search (محدودیت کمتر چون خود optimization دارد)
         logger.info("4️⃣ جستجوی تشابه...")
         similarity_searcher = BankingSimilaritySearch(db_manager)
         similarity_results = similarity_searcher.run_complete_similarity_analysis()
         logger.info(f"تولید شد: {similarity_results.get('new_test_users', 0)} کاربر تست جدید")
         
-        # 5. Comprehensive Visualization
+        # 5. Comprehensive Visualization (sample برای سرعت rendering)
         logger.info("5️⃣ ایجاد تصویرسازی‌های جامع...")
         visualizer = BankingVisualizationUtils()
         
-        # داشبورد جامع
+        # داشبورد جامع با sample مناسب
         transactions_sample = db_manager.execute_query(
-            "SELECT * FROM transactions ORDER BY RANDOM() LIMIT 10000"
+            "SELECT * FROM transactions ORDER BY RANDOM() LIMIT 50000"
         )
         
         dashboard_fig = visualizer.create_comprehensive_dashboard(
-            features_df, 
+            features_df.sample(n=min(10000, len(features_df)), random_state=42) if len(features_df) > 10000 else features_df, 
             transactions_sample
         )
         
@@ -170,18 +172,21 @@ def run_analysis():
             'clustering': {
                 'best_method': clustering_results.get('best_method'),
                 'best_score': clustering_results.get('best_score'),
-                'clusters_found': len(clustering_results.get('cluster_profiles', {}))
+                'clusters_found': len(clustering_results.get('cluster_profiles', {})),
+                'sample_size_used': clustering_sample_size
             },
             'anomaly_detection': {
                 'total_anomalies': anomaly_results.get('total_anomalies_detected', 0),
                 'best_method': anomaly_results.get('best_method'),
-                'detection_methods': list(anomaly_results.get('methods_results', {}).keys())
+                'detection_methods': list(anomaly_results.get('methods_results', {}).keys()),
+                'sample_size_used': anomaly_sample_size
             },
             'similarity_search': {
                 'new_test_users': similarity_results.get('new_test_users', 0),
                 'total_users': similarity_results.get('total_users', 0),
                 'avg_similarity': similarity_results.get('search_stats', {}).get('avg_similarity_score', 0)
-            }
+            },
+            'total_users_in_database': users_count
         }
         
         # ذخیره خلاصه
@@ -215,10 +220,11 @@ def run_analysis():
         print("\n" + "="*60)
         print("📊 خلاصه نتایج تحلیل")
         print("="*60)
+        print(f"📊 کل کاربران در دیتابیس: {analysis_summary['total_users_in_database']:,}")
         print(f"🔧 ویژگی‌های استخراج‌شده: {analysis_summary['feature_engineering']['features_extracted']}")
-        print(f"👥 کاربران پردازش‌شده: {analysis_summary['feature_engineering']['users_processed']:,}")
-        print(f"🎯 بهترین روش clustering: {analysis_summary['clustering']['best_method']}")
-        print(f"⚠️  ناهنجاری‌های کشف‌شده: {analysis_summary['anomaly_detection']['total_anomalies']:,}")
+        print(f"👥 کاربران ویژگی‌استخراج شده: {analysis_summary['feature_engineering']['users_processed']:,}")
+        print(f"🎯 بهترین روش clustering: {analysis_summary['clustering']['best_method']} (sample: {analysis_summary['clustering']['sample_size_used']:,})")
+        print(f"⚠️  ناهنجاری‌های کشف‌شده: {analysis_summary['anomaly_detection']['total_anomalies']:,} (sample: {analysis_summary['anomaly_detection']['sample_size_used']:,})")
         print(f"🆕 کاربران تست جدید: {analysis_summary['similarity_search']['new_test_users']}")
         print("="*60)
         
