@@ -2,7 +2,7 @@
 استخراج ویژگی‌های پیشرفته از داده‌های بانکی برای تحلیل و مدل‌سازی
 """
 
-import pandas as pd
+import polars as pl
 import numpy as np
 from typing import Dict, List, Any, Tuple
 import logging
@@ -33,9 +33,9 @@ class BankingFeatureExtractor:
         
         logger.info("BankingFeatureExtractor initialized")
     
-    def extract_transaction_volume_features(self, user_transactions: pd.DataFrame) -> Dict[str, float]:
+    def extract_transaction_volume_features(self, user_transactions: pl.DataFrame) -> Dict[str, float]:
         """استخراج ویژگی‌های مربوط به حجم تراکنش"""
-        if user_transactions.empty:
+        if user_transactions.is_empty():
             return {
                 'total_transactions': 0,
                 'total_amount': 0.0,
@@ -46,12 +46,10 @@ class BankingFeatureExtractor:
                 'median_transaction_amount': 0.0
             }
         
-        amounts = user_transactions['amount'].values
+        amounts = user_transactions.get_column('amount')
         
         # Handle NaN values
-        std_amount = amounts.std()
-        if np.isnan(std_amount):
-            std_amount = 0.0
+        std_amount = amounts.std() or 0.0
         
         return {
             'total_transactions': len(user_transactions),
@@ -60,12 +58,12 @@ class BankingFeatureExtractor:
             'std_transaction_amount': float(std_amount),
             'min_transaction_amount': float(amounts.min()),
             'max_transaction_amount': float(amounts.max()),
-            'median_transaction_amount': float(np.median(amounts))
+            'median_transaction_amount': float(amounts.median())
         }
     
-    def extract_temporal_features(self, user_transactions: pd.DataFrame) -> Dict[str, float]:
+    def extract_temporal_features(self, user_transactions: pl.DataFrame) -> Dict[str, float]:
         """استخراج ویژگی‌های زمانی"""
-        if user_transactions.empty:
+        if user_transactions.is_empty():
             return {
                 'avg_hour_of_day': 12.0,
                 'std_hour_of_day': 0.0,
@@ -74,20 +72,19 @@ class BankingFeatureExtractor:
                 'transaction_frequency': 0.0
             }
         
-        hours = user_transactions['hour_of_day'].values
-        is_weekend = user_transactions['is_weekend'].values
+        hours = user_transactions.get_column('hour_of_day')
+        is_weekend = user_transactions.get_column('is_weekend')
         
         # محاسبه نسبت تراکنش شبانه
-        night_ratio = np.mean((hours >= 22) | (hours <= 6))
+        night_mask = (hours >= 22) | (hours <= 6)
+        night_ratio = night_mask.mean()
         
         # محاسبه فرکانس تراکنش
-        unique_dates = user_transactions['transaction_date'].nunique()
+        unique_dates = user_transactions.get_column('transaction_date').n_unique()
         transaction_frequency = len(user_transactions) / max(unique_dates, 1)
         
         # Handle NaN values
-        std_hour = hours.std()
-        if np.isnan(std_hour):
-            std_hour = 0.0
+        std_hour = hours.std() or 0.0
         
         return {
             'avg_hour_of_day': float(hours.mean()),
@@ -97,9 +94,9 @@ class BankingFeatureExtractor:
             'transaction_frequency': float(transaction_frequency)
         }
     
-    def extract_geographical_features(self, user_transactions: pd.DataFrame) -> Dict[str, Any]:
+    def extract_geographical_features(self, user_transactions: pl.DataFrame) -> Dict[str, Any]:
         """استخراج ویژگی‌های جغرافیایی"""
-        if user_transactions.empty:
+        if user_transactions.is_empty():
             return {
                 'unique_cities_count': 0,
                 'unique_provinces_count': 0,
@@ -108,23 +105,31 @@ class BankingFeatureExtractor:
                 'geographical_diversity': 0.0
             }
         
-        cities = user_transactions['city'].values
-        provinces = user_transactions['province'].values
+        cities = user_transactions.get_column('city')
+        provinces = user_transactions.get_column('province')
         
         # تنوع جغرافیایی
-        geo_diversity = len(np.unique(cities)) / len(cities)
+        unique_cities_count = cities.n_unique()
+        geo_diversity = unique_cities_count / len(cities)
+        
+        # پیدا کردن پرتکرارترین شهر و استان
+        city_counts = user_transactions.group_by('city').agg(pl.len().alias('count')).sort('count', descending=True)
+        province_counts = user_transactions.group_by('province').agg(pl.len().alias('count')).sort('count', descending=True)
+        
+        most_frequent_city = city_counts.get_column('city')[0] if len(city_counts) > 0 else 'تهران'
+        most_frequent_province = province_counts.get_column('province')[0] if len(province_counts) > 0 else 'تهران'
         
         return {
-            'unique_cities_count': len(np.unique(cities)),
-            'unique_provinces_count': len(np.unique(provinces)),
-            'most_frequent_city': pd.Series(cities).mode().iloc[0] if len(cities) > 0 else 'تهران',
-            'most_frequent_province': pd.Series(provinces).mode().iloc[0] if len(provinces) > 0 else 'تهران',
+            'unique_cities_count': unique_cities_count,
+            'unique_provinces_count': provinces.n_unique(),
+            'most_frequent_city': most_frequent_city,
+            'most_frequent_province': most_frequent_province,
             'geographical_diversity': float(geo_diversity)
         }
     
-    def extract_amount_distribution_features(self, user_transactions: pd.DataFrame) -> Dict[str, float]:
+    def extract_amount_distribution_features(self, user_transactions: pl.DataFrame) -> Dict[str, float]:
         """استخراج ویژگی‌های توزیع مبلغ"""
-        if user_transactions.empty:
+        if user_transactions.is_empty():
             return {
                 'amount_percentile_25': 0.0,
                 'amount_percentile_75': 0.0,
@@ -132,7 +137,7 @@ class BankingFeatureExtractor:
                 'amount_skewness': 0.0
             }
         
-        amounts = user_transactions['amount'].values
+        amounts = user_transactions.get_column('amount')
         
         # اگر فقط یک مقدار داشته باشیم
         if len(amounts) == 1:
@@ -144,13 +149,14 @@ class BankingFeatureExtractor:
                 'amount_skewness': 0.0  # برای یک مقدار، skewness صفر است
             }
         
-        q25 = np.percentile(amounts, 25)
-        q75 = np.percentile(amounts, 75)
+        q25 = amounts.quantile(0.25)
+        q75 = amounts.quantile(0.75)
         iqr = q75 - q25
         
         # محاسبه skewness با handle کردن NaN
         try:
-            skewness = stats.skew(amounts)
+            amounts_np = amounts.to_numpy()
+            skewness = stats.skew(amounts_np)
             if np.isnan(skewness) or np.isinf(skewness):
                 skewness = 0.0
         except:
@@ -163,9 +169,9 @@ class BankingFeatureExtractor:
             'amount_skewness': float(skewness)
         }
     
-    def extract_behavioral_features(self, user_transactions: pd.DataFrame) -> Dict[str, float]:
+    def extract_behavioral_features(self, user_transactions: pl.DataFrame) -> Dict[str, float]:
         """استخراج ویژگی‌های رفتاری"""
-        if user_transactions.empty:
+        if user_transactions.is_empty():
             return {
                 'card_type_diversity': 0.0,
                 'device_type_diversity': 0.0,
@@ -173,18 +179,18 @@ class BankingFeatureExtractor:
             }
         
         # تنوع در استفاده از انواع کارت و دستگاه
-        card_types = user_transactions['card_type'].nunique()
-        device_types = user_transactions['device_type'].nunique()
+        card_types = user_transactions.get_column('card_type').n_unique()
+        device_types = user_transactions.get_column('device_type').n_unique()
         
         card_diversity = card_types / len(user_transactions)
         device_diversity = device_types / len(user_transactions)
         
         # امتیاز منظمی
-        daily_counts = user_transactions.groupby('transaction_date').size()
-        daily_std = daily_counts.std()
+        daily_counts = user_transactions.group_by('transaction_date').agg(pl.len().alias('count'))
+        daily_std = daily_counts.get_column('count').std() or 0.0
         
         # Handle NaN values
-        if np.isnan(daily_std) or daily_std == 0:
+        if daily_std == 0:
             regularity_score = 1.0  # کاملاً منظم
         else:
             regularity_score = 1 / (daily_std + 1)
@@ -202,11 +208,11 @@ class BankingFeatureExtractor:
             "SELECT * FROM users WHERE user_id = ?", [user_id]
         )
         
-        if user_info.empty:
+        if user_info.is_empty():
             logger.warning(f"User {user_id} not found")
             return {}
         
-        user_age = user_info.iloc[0]['age']
+        user_age = user_info.get_column('age')[0]
         
         # دریافت تراکنش‌های کاربر
         user_transactions = self.db_manager.get_user_transactions(user_id)
@@ -223,12 +229,12 @@ class BankingFeatureExtractor:
         # اضافه کردن ویژگی‌های دموگرافیک
         features.update({
             'age': user_age,
-            'birth_year': int(user_info.iloc[0]['birth_year'])
+            'birth_year': int(user_info.get_column('birth_year')[0])
         })
         
         return features
     
-    def extract_features_batch(self, user_ids: List[int]) -> pd.DataFrame:
+    def extract_features_batch(self, user_ids: List[int]) -> pl.DataFrame:
         """استخراج ویژگی برای مجموعه‌ای از کاربران"""
         logger.info(f"Extracting features for {len(user_ids)} users...")
         
@@ -241,9 +247,9 @@ class BankingFeatureExtractor:
         
         if not features_list:
             logger.warning("No features extracted")
-            return pd.DataFrame()
+            return pl.DataFrame()
         
-        features_df = pd.DataFrame(features_list)
+        features_df = pl.DataFrame(features_list)
         
         # ذخیره آمار
         self.extraction_stats['feature_names'] = list(features_df.columns)
@@ -254,13 +260,13 @@ class BankingFeatureExtractor:
         
         return features_df
     
-    def extract_all_user_features(self, batch_size: int = 1000) -> pd.DataFrame:
+    def extract_all_user_features(self, batch_size: int = 1000) -> pl.DataFrame:
         """استخراج ویژگی برای تمام کاربران"""
         logger.info("Starting feature extraction for all users...")
         
         # دریافت تمام user IDs
         all_users = self.db_manager.execute_query("SELECT user_id FROM users ORDER BY user_id")
-        all_user_ids = all_users['user_id'].tolist()
+        all_user_ids = all_users.get_column('user_id').to_list()
         
         logger.info(f"Found {len(all_user_ids)} users to process")
         
@@ -274,21 +280,21 @@ class BankingFeatureExtractor:
             
             batch_features = self.extract_features_batch(batch_user_ids)
             
-            if not batch_features.empty:
+            if not batch_features.is_empty():
                 all_features.append(batch_features)
         
         # ترکیب تمام batch ها
         if all_features:
-            final_features_df = pd.concat(all_features, ignore_index=True)
+            final_features_df = pl.concat(all_features)
             logger.info(f"Feature extraction completed: {len(final_features_df)} users")
             return final_features_df
         else:
             logger.warning("No features extracted")
-            return pd.DataFrame()
+            return pl.DataFrame()
     
-    def save_features_to_database(self, features_df: pd.DataFrame):
+    def save_features_to_database(self, features_df: pl.DataFrame):
         """ذخیره ویژگی‌ها در دیتابیس"""
-        if features_df.empty:
+        if features_df.is_empty():
             logger.warning("No features to save")
             return
         
@@ -296,14 +302,21 @@ class BankingFeatureExtractor:
         
         # تبدیل geographical features به string
         if 'most_frequent_city' in features_df.columns:
-            features_df['most_frequent_city'] = features_df['most_frequent_city'].astype(str)
+            features_df = features_df.with_columns(
+                pl.col('most_frequent_city').cast(pl.Utf8)
+            )
         if 'most_frequent_province' in features_df.columns:
-            features_df['most_frequent_province'] = features_df['most_frequent_province'].astype(str)
+            features_df = features_df.with_columns(
+                pl.col('most_frequent_province').cast(pl.Utf8)
+            )
+        
+        # تبدیل به pandas برای ذخیره در SQLite (موقتی)
+        pandas_df = features_df.to_pandas()
         
         # ذخیره در دیتابیس
         with self.db_manager.get_connection() as conn:
             conn.execute("DELETE FROM user_features")
-            features_df.to_sql('user_features', conn, if_exists='append', index=False)
+            pandas_df.to_sql('user_features', conn, if_exists='append', index=False)
             conn.commit()
         
         logger.info("Features saved to database successfully") 

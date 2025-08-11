@@ -2,7 +2,8 @@
 تبدیل و نرمال‌سازی ویژگی‌ها برای مدل‌سازی
 """
 
-import pandas as pd
+import polars as pl
+import pandas as pd  # Keep for sklearn compatibility
 import numpy as np
 from typing import Dict, List, Any, Tuple, Optional
 import logging
@@ -39,18 +40,24 @@ class FeatureTransformer:
         
         logger.info("FeatureTransformer initialized")
     
-    def identify_feature_types(self, features_df: pd.DataFrame) -> Dict[str, List[str]]:
-        """شناسایی انواع ویژگی‌ها"""
+    def identify_feature_types(self, features_df) -> Dict[str, List[str]]:
+        """شناسایی انواع ویژگی‌ها - پشتیبانی از Polars و Pandas"""
         feature_types = {
             'numerical': [],
             'categorical': [],
             'identifier': []
         }
         
-        for column in features_df.columns:
+        # تبدیل Polars به Pandas اگر لازم باشد
+        if isinstance(features_df, pl.DataFrame):
+            df_pandas = features_df.to_pandas()
+        else:
+            df_pandas = features_df
+        
+        for column in df_pandas.columns:
             if column in ['user_id']:
                 feature_types['identifier'].append(column)
-            elif features_df[column].dtype in ['object', 'category']:
+            elif df_pandas[column].dtype in ['object', 'category']:
                 feature_types['categorical'].append(column)
             else:
                 feature_types['numerical'].append(column)

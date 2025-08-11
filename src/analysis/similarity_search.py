@@ -2,7 +2,8 @@
 جستجوی تشابه کاربران بانکی و پیدا کردن الگوهای مشابه
 """
 
-import pandas as pd
+import polars as pl
+import pandas as pd  # Keep for sklearn compatibility
 import numpy as np
 from typing import Dict, List, Any, Tuple, Optional
 import logging

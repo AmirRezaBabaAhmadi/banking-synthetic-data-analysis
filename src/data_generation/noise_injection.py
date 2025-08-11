@@ -3,7 +3,8 @@
 """
 
 import numpy as np
-import pandas as pd
+import polars as pl
+import pandas as pd  # Keep for backward compatibility
 from typing import List, Dict, Any, Tuple, Optional
 import logging
 from datetime import datetime

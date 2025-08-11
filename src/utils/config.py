@@ -17,7 +17,7 @@ class DatabaseConfig:
 @dataclass
 class DataGenerationConfig:
     """تنظیمات تولید داده"""
-    total_users: int = 1_000_000
+    total_users: int = 100_000
     min_transactions_per_user: int = 20
     max_transactions_per_user: int = 2000
     

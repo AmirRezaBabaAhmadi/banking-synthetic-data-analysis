@@ -2,7 +2,8 @@
 تشخیص ناهنجاری در رفتار مشتریان بانکی با استفاده از SHAP برای تفسیر
 """
 
-import pandas as pd
+import polars as pl
+import pandas as pd  # Keep for sklearn compatibility
 import numpy as np
 from typing import Dict, List, Any, Tuple, Optional
 import logging

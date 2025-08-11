@@ -3,7 +3,8 @@
 """
 
 import numpy as np
-import pandas as pd
+import polars as pl
+import pandas as pd  # Keep for backward compatibility
 from typing import List, Dict, Any, Tuple, Iterator
 import logging
 from datetime import datetime, timedelta
@@ -46,7 +47,7 @@ class BankingDataGenerator:
         
         logger.info(f"BankingDataGenerator initialized for {self.data_config.total_users:,} users")
     
-    def generate_users_chunk(self, chunk_size: int, start_user_id: int = 1) -> pd.DataFrame:
+    def generate_users_chunk(self, chunk_size: int, start_user_id: int = 1) -> pl.DataFrame:
         """
         تولید chunk از کاربران
         
@@ -86,8 +87,8 @@ class BankingDataGenerator:
         card_types = self.distributions.generate_card_types(chunk_size)
         device_types = self.distributions.generate_device_types(chunk_size)
         
-        # ایجاد DataFrame
-        users_df = pd.DataFrame({
+        # ایجاد Polars DataFrame
+        users_df = pl.DataFrame({
             'user_id': user_ids,
             'age': ages,
             'birth_year': birth_years,
@@ -105,7 +106,7 @@ class BankingDataGenerator:
         
         return users_df
     
-    def generate_user_transactions(self, user_data: Dict[str, Any]) -> pd.DataFrame:
+    def generate_user_transactions(self, user_data: Dict[str, Any]) -> pl.DataFrame:
         """
         تولید تراکنش‌های یک کاربر
         
@@ -181,8 +182,8 @@ class BankingDataGenerator:
         is_weekends = [self.distributions.is_weekend(date) for date in transaction_dates]
         days_of_month = [int(date.split('-')[2]) for date in transaction_dates]
         
-        # ایجاد DataFrame تراکنش‌ها
-        transactions_df = pd.DataFrame({
+        # ایجاد Polars DataFrame تراکنش‌ها
+        transactions_df = pl.DataFrame({
             'user_id': [user_id] * num_transactions,
             'amount': amounts,
             'transaction_date': transaction_dates,
@@ -223,22 +224,24 @@ class BankingDataGenerator:
         # تولید تراکنش‌ها برای هر کاربر
         all_transactions = []
         
-        for _, user_row in tqdm(users_df.iterrows(), 
-                              total=len(users_df), 
+        # تبدیل Polars به دیکشنری برای iteration
+        users_dicts = users_df.to_dicts()
+        
+        for user_dict in tqdm(users_dicts, 
                               desc=f"Generating transactions for chunk {chunk_id + 1}",
                               leave=False):
             
-            user_transactions = self.generate_user_transactions(user_row.to_dict())
+            user_transactions = self.generate_user_transactions(user_dict)
             all_transactions.append(user_transactions)
         
         # ترکیب تمام تراکنش‌ها
         if all_transactions:
-            chunk_transactions_df = pd.concat(all_transactions, ignore_index=True)
+            chunk_transactions_df = pl.concat(all_transactions)
         else:
-            chunk_transactions_df = pd.DataFrame()
+            chunk_transactions_df = pl.DataFrame()
         
         # اعمال نویز به تراکنش‌ها
-        if not chunk_transactions_df.empty:
+        if not chunk_transactions_df.is_empty():
             chunk_transactions_df = self.noise_injector.apply_comprehensive_noise(
                 chunk_transactions_df, users_df
             )
@@ -419,7 +422,7 @@ class NewUserGenerator:
         self.distributions = StatisticalDistributions()
         self.config = get_config()
     
-    def generate_new_users(self, count: int = 100) -> pd.DataFrame:
+    def generate_new_users(self, count: int = 100) -> pl.DataFrame:
         """
         تولید کاربران جدید برای similarity search
         
@@ -427,7 +430,7 @@ class NewUserGenerator:
             count: تعداد کاربران جدید
             
         Returns:
-            DataFrame کاربران جدید
+            Polars DataFrame کاربران جدید
         """
         logger.info(f"Generating {count} new users for similarity search")
         
@@ -449,8 +452,8 @@ class NewUserGenerator:
         card_types = self.distributions.generate_card_types(count)
         device_types = self.distributions.generate_device_types(count)
         
-        # ایجاد DataFrame
-        new_users_df = pd.DataFrame({
+        # ایجاد Polars DataFrame
+        new_users_df = pl.DataFrame({
             'user_id': user_ids,
             'age': ages,
             'birth_year': birth_years,

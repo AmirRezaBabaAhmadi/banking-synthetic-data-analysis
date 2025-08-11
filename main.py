@@ -13,6 +13,7 @@ import argparse
 import logging
 import sys
 import os
+import asyncio
 from datetime import datetime
 
 # اضافه کردن مسیر src به Python path
@@ -93,14 +94,21 @@ def generate_full_dataset():
             generator.close()
 
 def run_analysis():
-    """انجام تحلیل‌های پیشرفته روی داده"""
-    logger.info("=== شروع تحلیل‌های پیشرفته ===")
+    """انجام تحلیل‌های پیشرفته روی داده (نسخه sync)"""
+    return asyncio.run(run_analysis_async())
+
+async def run_analysis_async():
+    """انجام تحلیل‌های پیشرفته روی داده با async processing"""
+    logger.info("=== شروع تحلیل‌های پیشرفته با Async Processing ===")
     
     try:
         from src.feature_engineering.extractors import BankingFeatureExtractor
+        from src.feature_engineering.async_extractors import AsyncBankingFeatureExtractor, run_async_feature_extraction
         from src.feature_engineering.transformers import FeatureTransformer
         from src.analysis.clustering import BankingCustomerClustering
+        from src.analysis.async_clustering import AsyncBankingCustomerClustering, run_async_clustering_analysis
         from src.analysis.anomaly_detection import BankingAnomalyDetector
+        from src.analysis.async_anomaly_detection import AsyncBankingAnomalyDetection, run_async_anomaly_analysis
         from src.analysis.similarity_search import BankingSimilaritySearch
         from src.utils.visualization import BankingVisualizationUtils
         
@@ -108,60 +116,76 @@ def run_analysis():
         db_manager = SQLiteManager()
         
         # بررسی وجود داده
-        users_count = db_manager.execute_query("SELECT COUNT(*) as count FROM users").iloc[0]['count']
+        users_df = db_manager.execute_query("SELECT COUNT(*) as count FROM users")
+        users_count = users_df.get_column('count')[0] if not users_df.is_empty() else 0
         if users_count == 0:
             logger.error("هیچ داده‌ای یافت نشد. لطفاً ابتدا تولید داده را اجرا کنید.")
             return
         
         logger.info(f"یافت شد: {users_count:,} کاربر برای تحلیل")
         
-        # 1. Feature Engineering
-        logger.info("1️⃣ استخراج ویژگی...")
-        feature_extractor = BankingFeatureExtractor(db_manager)
+        # 1. Async Feature Engineering
+        logger.info("1️⃣ استخراج ویژگی async...")
+        async_feature_extractor = AsyncBankingFeatureExtractor(db_manager, max_workers=8)
         
-        # استخراج ویژگی برای همه کاربران (به صورت batch)
-        logger.info(f"استخراج ویژگی برای {users_count:,} کاربر...")
-        features_df = feature_extractor.extract_all_user_features(batch_size=1000)
+        # استخراج async ویژگی برای همه کاربران
+        logger.info(f"استخراج async ویژگی برای {users_count:,} کاربر...")
+        features_df = await async_feature_extractor.extract_all_user_features_async(
+            batch_size=1000, concurrent_batches=3
+        )
         
         if not features_df.empty:
-            feature_extractor.save_features_to_database(features_df)
+            # ذخیره async
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, 
+                lambda: async_feature_extractor.save_features_to_database(features_df)
+            )
             logger.info(f"استخراج شد: {len(features_df.columns)} ویژگی برای {len(features_df)} کاربر")
         
-        # 2. Clustering Analysis (با sample مناسب برای performance)
-        logger.info("2️⃣ تحلیل دسته‌بندی...")
-        clustering_analyzer = BankingCustomerClustering(db_manager)
-        # برای clustering از 50,000 نمونه استفاده کنیم (balance بین دقت و سرعت)
+        # 2. Async Clustering Analysis & Anomaly Detection (concurrent)
+        logger.info("🚀 اجرای موازی clustering و anomaly detection...")
+        
         clustering_sample_size = min(50000, users_count)
-        clustering_results = clustering_analyzer.run_complete_clustering_analysis(sample_size=clustering_sample_size)
-        logger.info(f"بهترین روش clustering: {clustering_results.get('best_method', 'هیچ')}")
-        
-        # 3. Anomaly Detection (با sample مناسب)
-        logger.info("3️⃣ تشخیص ناهنجاری...")
-        anomaly_detector = BankingAnomalyDetector(db_manager)
-        # برای anomaly detection نیز از 30,000 نمونه استفاده کنیم
         anomaly_sample_size = min(30000, users_count)
-        anomaly_results = anomaly_detector.run_complete_anomaly_analysis(sample_size=anomaly_sample_size)
-        logger.info(f"کشف شد: {anomaly_results.get('total_anomalies_detected', 0)} ناهنجاری")
         
-        # 4. Similarity Search (محدودیت کمتر چون خود optimization دارد)
-        logger.info("4️⃣ جستجوی تشابه...")
+        # اجرای موازی clustering و anomaly detection
+        clustering_task = run_async_clustering_analysis(db_manager, clustering_sample_size, max_workers=4)
+        anomaly_task = run_async_anomaly_analysis(db_manager, anomaly_sample_size, max_workers=4)
+        
+        # منتظر ماندن برای تکمیل هر دو
+        clustering_results, anomaly_results = await asyncio.gather(clustering_task, anomaly_task)
+        
+        logger.info(f"✅ بهترین روش clustering: {clustering_results.get('best_method', 'هیچ')}")
+        logger.info(f"✅ کشف شد: {anomaly_results.get('total_anomalies_detected', 0)} ناهنجاری")
+        
+        # 3. Async Similarity Search
+        logger.info("3️⃣ جستجوی تشابه async...")
         similarity_searcher = BankingSimilaritySearch(db_manager)
-        similarity_results = similarity_searcher.run_complete_similarity_analysis()
-        logger.info(f"تولید شد: {similarity_results.get('new_test_users', 0)} کاربر تست جدید")
         
-        # 5. Comprehensive Visualization (sample برای سرعت rendering)
-        logger.info("5️⃣ ایجاد تصویرسازی‌های جامع...")
+        # اجرای async similarity search
+        loop = asyncio.get_event_loop()
+        similarity_results = await loop.run_in_executor(None, 
+            similarity_searcher.run_complete_similarity_analysis
+        )
+        logger.info(f"✅ تولید شد: {similarity_results.get('new_test_users', 0)} کاربر تست جدید")
+        
+        # 4. Async Visualization
+        logger.info("4️⃣ ایجاد تصویرسازی‌های جامع async...")
         visualizer = BankingVisualizationUtils()
         
-        # داشبورد جامع با sample مناسب
-        transactions_sample = db_manager.execute_query(
-            "SELECT * FROM transactions ORDER BY RANDOM() LIMIT 50000"
+        # داشبورد جامع با sample مناسب - async
+        transactions_task = loop.run_in_executor(None, 
+            lambda: db_manager.execute_query("SELECT * FROM transactions ORDER BY RANDOM() LIMIT 50000")
         )
         
-        dashboard_fig = visualizer.create_comprehensive_dashboard(
+        transactions_sample = await transactions_task
+        
+        dashboard_task = loop.run_in_executor(None, lambda: visualizer.create_comprehensive_dashboard(
             features_df.sample(n=min(10000, len(features_df)), random_state=42) if len(features_df) > 10000 else features_df, 
             transactions_sample
-        )
+        ))
+        
+        dashboard_fig = await dashboard_task
         
         # خلاصه نتایج
         analysis_summary = {
