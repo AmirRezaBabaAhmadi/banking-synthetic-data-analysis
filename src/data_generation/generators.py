@@ -14,6 +14,8 @@ from .distributions import StatisticalDistributions
 from .noise_injection import NoiseInjector
 from ..database.sqlite_manager import SQLiteManager
 from ..utils.config import get_config
+import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +271,28 @@ class BankingDataGenerator:
         logger.info(f"Chunk {chunk_id + 1} completed: "
                    f"{users_inserted} users, {transactions_inserted} transactions "
                    f"in {processing_time:.2f}s")
+
+        # Checkpoint پس از هر 10,000 کاربر (یا پایان هر chunk)
+        try:
+            os.makedirs("output/checkpoints", exist_ok=True)
+            checkpoint = {
+                "timestamp": datetime.now().isoformat(),
+                "chunk_id": chunk_id,
+                "start_user_id": start_user_id,
+                "users_inserted": users_inserted,
+                "transactions_inserted": transactions_inserted,
+                "total_users_generated": self.generation_stats['users_generated'],
+                "total_transactions_generated": self.generation_stats['transactions_generated'],
+                "processing_time_seconds": processing_time
+            }
+            # نام فایل: هر 10000 کاربر یک checkpoint
+            checkpoint_idx = self.generation_stats['users_generated'] // 10000
+            checkpoint_path = os.path.join("output", "checkpoints", f"checkpoint_{checkpoint_idx:05d}.json")
+            with open(checkpoint_path, "w", encoding="utf-8") as f:
+                json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+            logger.info(f"Checkpoint saved: {checkpoint_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save checkpoint: {e}")
         
         return chunk_stats
     

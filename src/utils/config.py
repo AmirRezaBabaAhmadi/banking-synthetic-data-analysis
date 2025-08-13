@@ -119,7 +119,8 @@ def setup_directories():
         'database',
         'output/reports',
         'output/plots', 
-        'output/summaries'
+        'output/summaries',
+        'output/checkpoints'
     ]
     
     for directory in directories:

@@ -1,10 +1,9 @@
 """
-سیستم تولید نویز کنترل‌شده برای شبیه‌سازی داده‌های واقعی
+سیستم تولید نویز کنترل‌شده برای شبیه‌سازی داده‌های واقعی (نسخه Polars)
 """
 
 import numpy as np
 import polars as pl
-import pandas as pd  # Keep for backward compatibility
 from typing import List, Dict, Any, Tuple, Optional
 import logging
 from datetime import datetime
@@ -14,7 +13,7 @@ from ..utils.config import get_config
 logger = logging.getLogger(__name__)
 
 class NoiseInjector:
-    """کلاس تولید و تزریق انواع نویز به داده‌ها"""
+    """کلاس تولید و تزریق انواع نویز به داده‌ها (تماماً با Polars)"""
     
     def __init__(self):
         """مقداردهی اولیه"""
@@ -168,8 +167,8 @@ class NoiseInjector:
         return amount, False
     
     def apply_comprehensive_noise(self, 
-                                transactions_df: pd.DataFrame,
-                                users_df: pd.DataFrame) -> pd.DataFrame:
+                                transactions_df: pl.DataFrame,
+                                users_df: pl.DataFrame) -> pl.DataFrame:
         """
         اعمال جامع تمام انواع نویز به DataFrame تراکنش‌ها
         
@@ -181,69 +180,124 @@ class NoiseInjector:
             DataFrame تراکنش‌ها با نویز اعمال‌شده
         """
         logger.info("Applying comprehensive noise to transactions...")
-        
-        # کپی DataFrame برای عدم تغییر اصلی
-        df = transactions_df.copy()
-        
-        # اضافه کردن ستون‌های نویز
-        df['is_noise'] = False
-        df['noise_type'] = None
-        
-        # ایجاد دیکشنری نگاشت user_id به age
-        user_ages = users_df.set_index('user_id')['age'].to_dict()
-        
-        # اعمال انواع نویز
-        for idx, row in df.iterrows():
-            user_age = user_ages.get(row['user_id'], 30)  # سن پیش‌فرض 30
-            noise_applied = []
-            
-            # 1. نویز موقعیت
-            new_province, new_city, location_noise = self.inject_location_noise(
-                row['province'], row['city']
-            )
-            if location_noise:
-                df.at[idx, 'province'] = new_province
-                df.at[idx, 'city'] = new_city
-                noise_applied.append('location_anomaly')
-            
-            # 2. نویز سن-مبلغ
-            new_amount, age_amount_noise = self.inject_age_amount_mismatch(
-                user_age, row['amount']
-            )
-            if age_amount_noise:
-                df.at[idx, 'amount'] = new_amount
-                noise_applied.append('age_amount_mismatch')
-            
-            # 3. نویز الگوی زمانی
-            new_hour, time_noise = self.inject_time_pattern_noise(
-                row['hour_of_day']
-            )
-            if time_noise:
-                df.at[idx, 'hour_of_day'] = new_hour
-                # بروزرسانی زمان کامل
-                time_parts = row['transaction_time'].split(':')
-                df.at[idx, 'transaction_time'] = f"{new_hour:02d}:{time_parts[1]}:{time_parts[2]}"
-                noise_applied.append('time_pattern_anomaly')
-            
-            # 4. نویز مبلغ outlier (فقط اگر نویز سن-مبلغ اعمال نشده)
-            if not age_amount_noise:
-                final_amount, amount_noise = self.inject_amount_outlier(
-                    df.at[idx, 'amount']
-                )
-                if amount_noise:
-                    df.at[idx, 'amount'] = final_amount
-                    noise_applied.append('amount_outlier')
-            
-            # ثبت نویز در DataFrame
-            if noise_applied:
-                df.at[idx, 'is_noise'] = True
-                df.at[idx, 'noise_type'] = ','.join(noise_applied)
-                self.noise_stats['total_noise_records'] += 1
-        
+
+        # اطمینان از وجود ستون‌های لازم
+        required_cols = {"user_id","amount","transaction_date","transaction_time","province","city","card_type","device_type","is_weekend","hour_of_day","day_of_month"}
+        missing = required_cols - set(transactions_df.columns)
+        if missing:
+            raise ValueError(f"Missing required columns in transactions: {missing}")
+
+        # الحاق سن کاربر به تراکنش‌ها
+        tx = transactions_df
+        users_min = users_df.select(["user_id","age"]) if "age" in users_df.columns else users_df
+        tx = tx.join(users_min, on="user_id", how="left")
+
+        n = tx.height
+        # ماسک‌ها و متغیرهای تصادفی
+        rand_loc = np.random.random(n)
+        rand_age = np.random.random(n)
+        rand_time = np.random.random(n)
+        rand_amount = np.random.random(n)
+        rand_big_small = np.random.random(n)
+
+        # 1) نویز موقعیت
+        location_rate = self.data_config.location_noise_rate
+        loc_mask = rand_loc < location_rate
+        new_city_arr = tx["city"].to_numpy().copy()
+        new_prov_arr = tx["province"].to_numpy().copy()
+        if loc_mask.any():
+            remote_choices = np.random.choice(self.iran_config.REMOTE_LOCATIONS, size=loc_mask.sum())
+            # نگاشت شهر -> استان
+            mapped_provinces = []
+            for c in remote_choices:
+                if c in ['چابهار', 'زاهدان', 'زابل']:
+                    mapped_provinces.append('سیستان و بلوچستان')
+                else:
+                    mapped_provinces.append('هرمزگان')
+            new_city_arr[loc_mask] = remote_choices
+            new_prov_arr[loc_mask] = np.array(mapped_provinces, dtype=object)
+
+        # 2) نویز سن-مبلغ
+        age_rate = self.data_config.age_amount_noise_rate
+        ages = tx["age"].fill_null(30).to_numpy() if "age" in tx.columns else np.full(n, 30)
+        amt_arr = tx["amount"].to_numpy().copy()
+        age_mask = (ages < 25) & (rand_age < age_rate)
+        if age_mask.any():
+            amt_arr[age_mask] = np.random.uniform(5_000_000, 20_000_000, size=age_mask.sum())
+
+        # 3) نویز الگوی زمانی
+        time_rate = self.data_config.time_pattern_noise_rate
+        time_mask = rand_time < time_rate
+        hour_arr = tx["hour_of_day"].to_numpy().astype(int).copy()
+        if time_mask.any():
+            hour_arr[time_mask] = np.random.randint(2, 6, size=time_mask.sum())
+        # بروزرسانی رشته زمان
+        time_str_arr = tx["transaction_time"].to_numpy().astype(object).copy()
+        if time_mask.any():
+            # فقط برای اندیس‌های time_mask، ساعت را جایگزین کنید
+            idxs = np.where(time_mask)[0]
+            for i in idxs:
+                parts = str(time_str_arr[i]).split(":")
+                if len(parts) == 3:
+                    time_str_arr[i] = f"{int(hour_arr[i]):02d}:{parts[1]}:{parts[2]}"
+
+        # 4) نویز مبلغ outlier (اگر نویز سن-مبلغ اعمال نشده)
+        outlier_rate = self.data_config.amount_outlier_rate
+        amount_mask = (~age_mask) & (rand_amount < outlier_rate)
+        if amount_mask.any():
+            big_mask = rand_big_small[amount_mask] < 0.7
+            big_vals = np.random.uniform(30_000_000, 100_000_000, size=big_mask.sum())
+            small_vals = np.random.uniform(100, 800, size=(~big_mask).sum())
+            replacement = np.empty(amount_mask.sum())
+            replacement[big_mask] = big_vals
+            replacement[~big_mask] = small_vals
+            amt_arr[amount_mask] = replacement
+
+        # برچسب‌گذاری نویز و نوع آن
+        is_noise_arr = loc_mask | age_mask | time_mask | amount_mask
+
+        # تولید رشته noise_type با ترتیب منطقی
+        def build_noise_type_strings() -> np.ndarray:
+            parts = np.empty((n, 4), dtype=object)
+            parts[:, 0] = np.where(loc_mask, 'location_anomaly', '')
+            parts[:, 1] = np.where(age_mask, 'age_amount_mismatch', '')
+            parts[:, 2] = np.where(time_mask, 'time_pattern_anomaly', '')
+            parts[:, 3] = np.where(amount_mask, 'amount_outlier', '')
+            # ترکیب با حذف رشته‌های خالی
+            result = np.empty(n, dtype=object)
+            for i in range(n):
+                tokens = [p for p in parts[i] if p]
+                result[i] = ",".join(tokens) if tokens else None
+            return result
+
+        noise_type_arr = build_noise_type_strings()
+
+        # اعمال تغییرات به DataFrame
+        tx = tx.with_columns([
+            pl.Series("province", new_prov_arr),
+            pl.Series("city", new_city_arr),
+            pl.Series("amount", amt_arr),
+            pl.Series("hour_of_day", hour_arr),
+            pl.Series("transaction_time", time_str_arr),
+            pl.Series("is_noise", is_noise_arr),
+            pl.Series("noise_type", noise_type_arr),
+        ])
+
+        # بروزرسانی آمار نویز
+        self.noise_stats['location_anomaly'] += int(loc_mask.sum())
+        self.noise_stats['age_amount_mismatch'] += int(age_mask.sum())
+        self.noise_stats['time_pattern_anomaly'] += int(time_mask.sum())
+        self.noise_stats['amount_outlier'] += int(amount_mask.sum())
+        self.noise_stats['total_noise_records'] += int(is_noise_arr.sum())
+
+        # حذف ستون age الحاق‌شده
+        if "age" in tx.columns:
+            tx = tx.drop("age")
+
         logger.info(f"Noise injection completed. Total noise records: {self.noise_stats['total_noise_records']}")
-        return df
+        return tx
     
-    def generate_controlled_user_noise(self, users_df: pd.DataFrame) -> pd.DataFrame:
+    def generate_controlled_user_noise(self, users_df: pl.DataFrame) -> pl.DataFrame:
         """
         تولید نویز کنترل‌شده در داده‌های کاربران
         
@@ -253,23 +307,35 @@ class NoiseInjector:
         Returns:
             DataFrame کاربران با نویز اعمال‌شده
         """
-        df = users_df.copy()
-        
-        # نویز سن: 1% کاربران سن غیرعادی دارند
-        age_noise_mask = np.random.random(len(df)) < 0.01
-        unusual_ages = np.random.choice([16, 17, 85, 90, 95], size=np.sum(age_noise_mask))
-        df.loc[age_noise_mask, 'age'] = unusual_ages
-        
-        # نویز موقعیت: 2% کاربران در شهرهای دورافتاده ثبت‌نام کرده‌اند
-        location_noise_mask = np.random.random(len(df)) < 0.02
-        for idx in df[location_noise_mask].index:
-            remote_city = np.random.choice(self.iran_config.REMOTE_LOCATIONS)
-            if remote_city in ['چابهار', 'زاهدان', 'زابل']:
-                df.at[idx, 'province'] = 'سیستان و بلوچستان'
-            else:
-                df.at[idx, 'province'] = 'هرمزگان'
-            df.at[idx, 'city'] = remote_city
-        
+        df = users_df
+        n = df.height
+
+        # 1) نویز سن: 1%
+        age_mask = np.random.random(n) < 0.01
+        if age_mask.any():
+            ages = df["age"].to_numpy().copy()
+            ages[age_mask] = np.random.choice([16, 17, 85, 90, 95], size=int(age_mask.sum()))
+            df = df.with_columns([pl.Series("age", ages)])
+
+        # 2) نویز موقعیت: 2%
+        loc_mask = np.random.random(n) < 0.02
+        if loc_mask.any():
+            prov = df["province"].to_numpy().astype(object).copy()
+            city = df["city"].to_numpy().astype(object).copy()
+            selected = np.random.choice(self.iran_config.REMOTE_LOCATIONS, size=int(loc_mask.sum()))
+            mapped_prov = []
+            for c in selected:
+                if c in ['چابهار', 'زاهدان', 'زابل']:
+                    mapped_prov.append('سیستان و بلوچستان')
+                else:
+                    mapped_prov.append('هرمزگان')
+            prov[loc_mask] = np.array(mapped_prov, dtype=object)
+            city[loc_mask] = selected
+            df = df.with_columns([
+                pl.Series("province", prov),
+                pl.Series("city", city),
+            ])
+
         return df
     
     def get_noise_statistics(self) -> Dict[str, Any]:
