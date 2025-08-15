@@ -112,11 +112,13 @@ async def run_analysis_async():
         from src.analysis.similarity_search import BankingSimilaritySearch
         from src.utils.visualization import BankingVisualizationUtils
         
-        # مدیر دیتابیس
-        db_manager = SQLiteManager()
+        # مدیر دیتابیس - استفاده از async manager مستقیم در async context
+        from src.database.async_sqlite_manager import AsyncSQLiteManager
+        db_manager = AsyncSQLiteManager()
+        await db_manager.initialize()
         
         # بررسی وجود داده
-        users_df = db_manager.execute_query("SELECT COUNT(*) as count FROM users")
+        users_df = await db_manager.execute_query("SELECT COUNT(*) as count FROM users")
         users_count = users_df.get_column('count')[0] if not users_df.is_empty() else 0
         if users_count == 0:
             logger.error("هیچ داده‌ای یافت نشد. لطفاً ابتدا تولید داده را اجرا کنید.")
@@ -174,9 +176,7 @@ async def run_analysis_async():
         visualizer = BankingVisualizationUtils()
         
         # داشبورد جامع با sample مناسب - async
-        transactions_task = loop.run_in_executor(None, 
-            lambda: db_manager.execute_query("SELECT * FROM transactions ORDER BY RANDOM() LIMIT 50000")
-        )
+        transactions_task = db_manager.execute_query("SELECT * FROM transactions ORDER BY RANDOM() LIMIT 50000")
         
         transactions_sample = await transactions_task
         

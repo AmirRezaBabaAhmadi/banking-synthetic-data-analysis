@@ -461,45 +461,78 @@ class HybridSQLiteManager:
         self.chunk_size = self.async_manager.chunk_size
         self.batch_size = self.async_manager.batch_size
         self.enable_wal = self.async_manager.enable_wal
+        self._initialized = False
         
-        # مقداردهی sync
-        asyncio.run(self.async_manager.initialize())
+        # مقداردهی sync - بررسی event loop
+        try:
+            # بررسی اینکه آیا در event loop هستیم یا نه
+            loop = asyncio.get_running_loop()
+            # اگر در event loop هستیم، initialization را به تعویق می‌اندازیم
+            logger.warning("Already in event loop, deferring initialization")
+        except RuntimeError:
+            # اگر event loop نداریم، می‌توانیم asyncio.run استفاده کنیم
+            asyncio.run(self.async_manager.initialize())
+            self._initialized = True
     
+    def _ensure_initialized(self):
+        """اطمینان از مقداردهی اولیه"""
+        if not self._initialized:
+            try:
+                loop = asyncio.get_running_loop()
+                # اگر در event loop هستیم، نمی‌توانیم asyncio.run استفاده کنیم
+                raise RuntimeError("Cannot initialize synchronously from within event loop. Use async methods instead.")
+            except RuntimeError as e:
+                if "no running event loop" in str(e):
+                    # اگر event loop نداریم، می‌توانیم مقداردهی کنیم
+                    asyncio.run(self.async_manager.initialize())
+                    self._initialized = True
+                else:
+                    raise
+
     # Sync methods برای سازگاری
     def execute_query(self, query: str, params: List = None) -> pl.DataFrame:
         """اجرای sync کوئری SQL"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.execute_query(query, params))
     
     def get_database_stats(self) -> Dict[str, Any]:
         """دریافت sync آمار دیتابیس"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.get_database_stats())
     
     def get_users_batch(self, batch_size: int = None, offset: int = 0) -> pl.DataFrame:
         """دریافت sync batch از کاربران"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.get_users_batch(batch_size, offset))
     
     def get_transactions_batch(self, batch_size: int = None, offset: int = 0) -> pl.DataFrame:
         """دریافت sync batch از تراکنش‌ها"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.get_transactions_batch(batch_size, offset))
     
     def get_user_transactions(self, user_id: int) -> pl.DataFrame:
         """دریافت sync تراکنش‌های کاربر"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.get_user_transactions(user_id))
     
     def insert_users_chunk(self, users_df: pl.DataFrame) -> int:
         """درج sync chunk از کاربران"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.insert_users_chunk(users_df))
     
     def insert_transactions_chunk(self, transactions_df: pl.DataFrame) -> int:
         """درج sync chunk از تراکنش‌ها"""
+        self._ensure_initialized()
         return asyncio.run(self.async_manager.insert_transactions_chunk(transactions_df))
     
     def close(self):
         """بستن sync manager"""
-        asyncio.run(self.async_manager.close())
+        if self._initialized:
+            asyncio.run(self.async_manager.close())
     
     def vacuum_database(self):
         """پاکسازی sync دیتابیس"""
+        self._ensure_initialized()
         asyncio.run(self.async_manager.vacuum_database())
     
     # Async methods
